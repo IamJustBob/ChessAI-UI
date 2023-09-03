@@ -1,0 +1,4 @@
+pygame
+chess
+tensorflow
+numpy
