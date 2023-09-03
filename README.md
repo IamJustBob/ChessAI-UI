@@ -37,7 +37,6 @@ You can play with it to train it or whatever you want to do with with, used pyga
 
 - Use your mouse to select and move the chess pieces.
 - Watch the AI evaluate the board and make its move.
-- [Add any other specific instructions or details about gameplay here]
 
 ## Feedback and Contributions
 
