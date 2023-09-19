@@ -2,14 +2,18 @@ import sys
 import io
 # original_stdout = sys.stdout
 # sys.stdout = io.StringIO()
+from threading import Thread
 import pygame
+import pyperclip
 import chess
+import chess.pgn
 from keras.models import load_model
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 import random
 import math
+from datetime import datetime
 
 pygame.mixer.init()
 
@@ -39,34 +43,124 @@ LIGHT_SQUARE_COLOR = white
 DARK_SQUARE_COLOR = black
 DARKEN_OVERLAY_COLOR = (0, 0, 0, 128)
 
-def animate_loading_spinner():
-	global angle
+def lerp(start, end, t):
+	return (1 - t) * start + t * end
 
-	# Clear the screen
-	screen.fill((0, 0, 0))
+def pause_menu(board_surface):
+	running = True
+	fonts = pygame.font.Font(None, 48)
+	alpha_value = 0 
+	alpha_increment = 2 
+	hover_color = (100, 100, 100)
 
-	# Calculate circle's new position based on angle
-	x = screen_width/2 + circle_radius * math.cos(angle)
-	y = screen_height/2 + circle_radius * math.sin(angle)
+	# Button definition with extra properties for hover effect and color
+	class Button(pygame.Rect):
+		def __init__(self, x, y, width, height, color, hover_color):
+			super().__init__(x, y, width, height)
+			self.default_width = width
+			self.current_width = width
+			self.target_width = width * 1.2
+			self.is_hovered = False
 
-	# Draw the circle
-	pygame.draw.circle(screen, circle_color, (int(x), int(y)), 10)
+			self.default_color = list(color)  # Convert to list for mutable RGB values
+			self.current_color = self.default_color.copy()
+			self.hover_color = hover_color
 
-	# Increment the angle
-	angle += 0.05
+		def update(self, mouse_pos):
+			self.is_hovered = self.collidepoint(mouse_pos)
 
-	pygame.display.flip()
+			# Update width
+			if self.is_hovered:
+				self.current_width = lerp(self.current_width, self.target_width, 0.1)
+			else:
+				self.current_width = lerp(self.current_width, self.default_width, 0.1)
 
-	# Small delay to control the speed of the animation
-	pygame.time.wait(16)  # Roughly 60FPS
+			# Update color
+			target_color = self.hover_color if self.is_hovered else self.default_color
+			for i in range(3):
+				self.current_color[i] = int(lerp(self.current_color[i], target_color[i], 0.1))
 
-def display_end_menu(result, last_board_surface, turn):
+	conti_button = Button(25, 25, 150, 50, (150, 150, 150), (100, 100, 100))
+	quit_button = Button(25, 90, 100, 50, (255, 50, 50), (205, 0, 0))
+
+	darkening = True
+	while running:
+		for event in pygame.event.get():
+			if event.type == pygame.QUIT:
+				running = False
+				pygame.quit()
+				return
+			elif event.type == pygame.MOUSEBUTTONDOWN:
+				if conti_button.collidepoint(event.pos):
+					running = False
+					darkening = False  # Start the lightening effect
+					return
+				if quit_button.collidepoint(event.pos):
+					running = False
+					pygame.quit()
+					return
+				if test_mode.collidepoint(event.pos):
+					running = False
+					return True
+			elif event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_ESCAPE:
+					running = False
+					darkening = False  # Start the lightening effect
+					return
+		mouse_pos = pygame.mouse.get_pos()
+		conti_button.update(mouse_pos)
+		quit_button.update(mouse_pos)
+
+		screen.blit(board_surface, (0, 0))
+
+		darken_surface = pygame.Surface((720, 720), pygame.SRCALPHA)
+
+		# Increase alpha_value until it reaches 128
+		if darkening:
+			alpha_value = min(128, alpha_value + alpha_increment)
+		else:
+			alpha_value = max(0, alpha_value - alpha_increment)
+		
+		# Update darken_surface with the new alpha_value
+		darken_surface.fill((0, 0, 0, alpha_value))
+		screen.blit(darken_surface, (0, 0))
+
+		# Draw buttons using their current width
+		pygame.draw.rect(screen, conti_button.current_color, (conti_button.x, conti_button.y, conti_button.current_width, conti_button.height))
+		conti_text = fonts.render("Continue", True, (255, 255 ,255))
+		conti_text_rect = conti_text.get_rect(center=conti_button.center)
+		screen.blit(conti_text, conti_text_rect)
+
+		pygame.draw.rect(screen, quit_button.current_color, (quit_button.x, quit_button.y, quit_button.current_width, quit_button.height))
+		quit_text = fonts.render("Quit", True, (255, 255, 255))
+		quit_text_rect = quit_text.get_rect(center=quit_button.center)
+		screen.blit(quit_text, quit_text_rect)
+
+		pygame.display.flip()
+
+
+
+
+def display_end_menu(result, last_board_surface, turn, game):
 	running = True
 	button_font = pygame.font.Font(None, 48)
 
 	# Define button dimensions and positions
-	play_again_button = pygame.Rect(720 // 2 - 100, 720 // 2, 200, 50)
-	quit_button = pygame.Rect(720 // 2 - 45, 720 // 2 + 60, 90, 50)
+
+	class Button(pygame.Rect):
+		def __init__(self, x, y, width, height, color, hover_color):
+			super().__init__(x, y, width, height)
+			self.default_color = list(color)
+			self.current_color = self.default_color.copy()
+			self.hover_color = hover_color
+
+		def update(self, mouse_pos):
+			target_color = self.hover_color if self.collidepoint(mouse_pos) else self.default_color
+			for i in range(3):  # For R, G, B values
+				self.current_color[i] = int(lerp(self.current_color[i], target_color[i], 0.1))
+	play_again_button = Button(screen_width // 2 - 100, screen_height // 2, 200, 50, (150, 150, 150), (100, 100, 100))
+	quit_button = Button(screen_width // 2 - 45, screen_height // 2 + 60, 90, 50, (255, 50, 50), (205, 0, 0))
+	copy_pgn = Button(screen_width // 2 - 90, screen_height // 2 + 120, 180, 50, (255, 255, 255), (205, 205, 205))
 
 	while running:
 		for event in pygame.event.get():
@@ -82,6 +176,25 @@ def display_end_menu(result, last_board_surface, turn):
 					running = False
 					pygame.quit()
 					return "quit"
+				elif copy_pgn.collidepoint(event.pos):
+					pgn = chess.pgn.Game.from_board(game)
+					pgn.headers["Event"] = "My Chess Event"
+					pgn.headers["Site"] = "TensorFlare-UI"
+					pgn.headers["Date"] = datetime.now().strftime('%Y.%m.%d')
+					if turn == "White":
+						pgn.headers["White"] = "Player"
+						pgn.headers["Black"] = "Manual-Tensor"
+					else:
+						pgn.headers["White"] = "Manual-Tensor"
+						pgn.headers["Black"] = "Player"
+					pgn.headers["Result"] = result
+					pyperclip.copy(str(pgn))
+		mouse_pos = pygame.mouse.get_pos()
+		play_again_button.update(mouse_pos)
+		quit_button.update(mouse_pos)
+		copy_pgn.update(mouse_pos)
+
+
 
 		# Display the last board position
 		screen.blit(last_board_surface, (0, 0))
@@ -109,13 +222,19 @@ def display_end_menu(result, last_board_surface, turn):
 		screen.blit(text, text_rect)
 
 		# Display "Play Again" button
-		pygame.draw.rect(screen, (100, 150, 100), play_again_button)
+		pygame.draw.rect(screen, play_again_button.current_color, play_again_button)
 		play_text = button_font.render("Play Again", True, (255, 255, 255))
 		play_text_rect = play_text.get_rect(center=play_again_button.center)
 		screen.blit(play_text, play_text_rect)
 
+		# Display "Copy" PNG button
+		pygame.draw.rect(screen, copy_pgn.current_color, copy_pgn)
+		copy_text = button_font.render("Copy PGN", True, (255, 255, 255))
+		copy_text_rect = copy_text.get_rect(center=copy_pgn.center)
+		screen.blit(copy_text, copy_text_rect)
+
 		# Display "Quit" button
-		pygame.draw.rect(screen, (150, 50, 50), quit_button)
+		pygame.draw.rect(screen, quit_button.current_color, quit_button)
 		quit_text = button_font.render("Quit", True, (255, 255, 255))
 		quit_text_rect = quit_text.get_rect(center=quit_button.center)
 		screen.blit(quit_text, quit_text_rect)
@@ -218,91 +337,166 @@ def get_reward(board):
 	else:
 		return 0
 
+def expect_score(opo_rating, player_rating):
+	return 1/(1+10*(opo_rating - player_rating)/400)
+def get_rating(Old_Rating,S,K,E):
+	print(E)
+	return Old_Rating+K*(S-E)
+
+def calculate_features(board):
+	piece_mobility = 0
+	for piece in board.pieces:
+		piece_mobility += len(piece.valid_moves)
+	return [piece_mobility]
+
+
+def build_model(input_shape=(14, 8, 8), num_res_blocks=5):
+	inputs = layers.Input(shape=input_shape)
+	x = layers.Conv2D(128, kernel_size=3, padding='same')(inputs)
+	x = layers.BatchNormalization()(x)
+	x = layers.ReLU()(x)
+
+	for _ in range(num_res_blocks):
+		residual = x
+		x = layers.Conv2D(128, kernel_size=3, padding='same')(x)
+		x = layers.BatchNormalization()(x)
+		x = layers.ReLU()(x)
+		x = layers.Conv2D(128, kernel_size=3, padding='same')(x)
+		x = layers.BatchNormalization()(x)
+		x += residual
+		x = layers.ReLU()(x)
+
+	x = layers.Flatten()(x)
+	policy_head = layers.Dense(4672, activation='softmax', name='policy')(x)  # 4672 is the number of possible chess moves
+	value_head = layers.Dense(1, activation='tanh', name='value')(x)
+
+	model = Model(inputs=inputs, outputs=[policy_head, value_head])
+
+	model.compile(optimizer=keras.optimizers.Adam(learning_rate=0.0005, clipnorm=1.0),
+			  loss={'policy': 'categorical_crossentropy', 'value': 'mse'},
+			  metrics={'policy': 'accuracy', 'value': 'mse'})
+	return model
+
+def step_decay_schedule(initial_lr=0.0005, decay_factor=0.75, step_size=10):
+	'''
+	Wrapper function to create a LearningRateScheduler with step decay schedule.
+	'''
+	def schedule(epoch):
+		return initial_lr * (decay_factor ** np.floor(epoch/step_size))
+	
+	return keras.callbacks.LearningRateScheduler(schedule)
+
+# Define the reward function
+def get_reward(board):
+	if board.is_game_over():
+		if board.result() == '1-0':
+			return 1
+		elif board.result() == '0-1':
+			return -1
+		elif board.result() == "1/2-1/2":
+			return -0.2
+		else:
+			return 0
+	else:
+		return 0
+
 def mcts(board, model, epsilon, simulations):
+	# Initialize the root node
+	root = Node(board.fen(), None)
 	if random.uniform(0, 1) < epsilon:
 		legal_moves = list(board.legal_moves)
 		random_move = random.choice(legal_moves)
 		return str(random_move) 
-	# Initialize the root node
-	root = Node(board.fen(), None)
 
 	# Run the simulations
 	for _ in range(simulations):
 		# Select the leaf node
-		leaf = root.select()
+		leaf = root.select()  # This should now use PUCT for selection
 
-		# Expand the leaf node
-		leaf.expand()
+		# If the game is not over, expand the leaf node
+		if not leaf.board.is_game_over():
+			leaf.expand()  # Make sure to set the prior probabilities here
 
 		# Simulate the game from the leaf node
-		original_stdout = sys.stdout
-		sys.stdout = io.StringIO()
-		reward = simulate(leaf.board, model, verbose=False)
+		reward = simulate(leaf.board, model, verbose=True)
 
 		# Backpropagate the reward
 		leaf.backpropagate(reward)
 
-	# Return the best move
-	sys.stdout = original_stdout
+	# Otherwise, return the best move
 	return root.best_move()
 
 # Define the Node class for MCTS
+# Define the Node class for MCTS
 class Node:
-	def __init__(self, fen, parent):
+	def __init__(self, fen, parent, prior=0):
 		self.fen = fen
 		self.parent = parent
 		self.children = []
 		self.visits = 0
 		self.value = 0
-	
+		self.prior = prior
 	@property
 	def board(self):
 		return chess.Board(self.fen)
-	
+
 	def select(self):
 		if not self.children:
 			return self
-		
-		ucb1_values = [child.ucb1() for child in self.children]
-		max_index = np.argmax(ucb1_values)
+
+		puct_values = [child.puct() for child in self.children]
+		max_index = np.argmax(puct_values)
 		return self.children[max_index].select()
-	
+
 	def expand(self):
 		for move in self.board.legal_moves:
 			new_board = self.board.copy()
 			new_board.push(move)
 			new_node = Node(new_board.fen(), self)
 			self.children.append(new_node)
-	
+
 	def backpropagate(self, reward):
 		self.visits += 1
 		self.value += reward
-		
+
 		if self.parent:
 			self.parent.backpropagate(reward)
-	
-	def ucb1(self):
+
+	# def ucb1(self):
+	# 	if not self.visits:
+	# 		return float('inf')
+
+	# 	exploitation = self.value / self.visits
+	# 	exploration = np.sqrt(2 * np.log(self.parent.visits) / self.visits)
+
+	# 	return exploitation + exploration
+
+	def puct(self, c=1):
 		if not self.visits:
 			return float('inf')
-		
+
 		exploitation = self.value / self.visits
-		exploration = np.sqrt(2 * np.log(self.parent.visits) / self.visits)
-		
+		exploration = c * np.sqrt(self.parent.visits) * self.prior / (1 + self.visits)
+
 		return exploitation + exploration
-	
+
 	def best_move(self):
 		visits = [child.visits for child in self.children]
 		max_index = np.argmax(visits)
-		
+
 		move_uci = list(self.board.legal_moves)[max_index].uci()
-		
+
 		return move_uci
 
 # Define the simulate function for MCTS
-def simulate(board, model, verbose=False):
+def simulate(board, model, verbose=True):
 	while not board.is_game_over():
 		# Get the legal moves and their corresponding boards
 		legal_moves = list(board.legal_moves)
+
+		# If there are no legal moves, break the loop
+		if not legal_moves:
+			break
 
 		boards = []
 
@@ -312,34 +506,54 @@ def simulate(board, model, verbose=False):
 			boards.append(new_board)
 
 		# Predict the values of the boards using the DQN model
-		values = model.predict(np.array([board_to_array(board) for board in boards]))
+		policy_values, _ = model.predict(np.array([board_to_array(board) for board in boards]))
 
-		# Select the best move based on the predicted values
-		best_index = np.argmax(values)
+		# If policy_values is empty, break the loop
+		if not policy_values.size:
+			break
+
+		# Select the best move based on the predicted policy values
+		best_index = np.argmax(policy_values)
+
+		# If best_index is out of range, break the loop
+		if best_index >= len(legal_moves):
+			break
 
 		# Make the best move on the board
 		board.push(legal_moves[best_index])
 
 		if verbose:
-			print(f"Move made: {legal_moves[best_index]} with value: {values[best_index]}")  # Hypothetical verbose output
+			print(f"Move made: {legal_moves[best_index]} with value: {policy_values[best_index]}")
 
 	# Return the reward of the final board state
 	return get_reward(board)
 
-# Define a function to convert a chess board to a numpy array
 def board_to_array(board):
+	# Define a dictionary to map pieces to integers
 	pieces_dict = {'P': 1, 'N': 2, 'B': 3, 'R': 4, 'Q': 5, 'K': 6,
 				   'p': -1, 'n': -2, 'b': -3, 'r': -4, 'q': -5, 'k': -6}
-	
-	board_array = np.zeros((1, 8, 8))
-	
+
+	# Initialize a zero array with shape (14, 8, 8)
+	board_array = np.zeros((14, 8, 8))
+
+	# Iterate over all squares on the board
 	for square in chess.SQUARES:
 		piece = board.piece_at(square)
-		
+
 		if piece:
+			# Get the row and column indices
 			row, col = divmod(square, 8)
-			board_array[0, row, col] = pieces_dict[piece.symbol()]
-	
+
+			# Get the piece index
+			piece_index = pieces_dict[piece.symbol()]
+
+			# If it's a white piece, subtract one from the index to get a zero-based index
+			if piece.color == chess.WHITE:
+				piece_index -= 1
+
+			# Set the corresponding position in the board array to one
+			board_array[piece_index, row, col] = 1
+
 	return board_array
 
 def generate_chess_squares():
@@ -348,7 +562,6 @@ def generate_chess_squares():
 		for col in range(1, 9):
 			squares.append(f'{row}{col}')
 	return squares
-from threading import Thread
 
 def retrain():
 	with open("engines/epsilon.txt","r",encoding='utf-8') as ep:
@@ -443,7 +656,7 @@ while rep:
 	while on:
 		if game.is_game_over():
 			mate.play()
-			choice = display_end_menu(game.result(), screen.copy(), player)
+			choice = display_end_menu(game.result(), screen.copy(), player, game)
 			thread_retrain = Thread(target=retrain)
 			thread_retrain.start()
 			if choice == "again":
@@ -456,6 +669,9 @@ while rep:
 			if event.type == pygame.QUIT:
 				pygame.quit()
 				sys.exit()
+			elif event.type == pygame.KEYDOWN:
+				if event.key == pygame.K_ESCAPE:
+					pause_menu(screen.copy())
 			elif event.type == pygame.MOUSEBUTTONDOWN:
 				x, y = pygame.mouse.get_pos()
 				col = x // square_size
@@ -567,6 +783,7 @@ while rep:
 					board.append(board_row)
 		#make a new move for the black pieces
 		if not game.is_game_over() and move_queue.empty() and (future is None or future.done()):
+			transposition = {}
 			if player == "Black":
 				if game.turn == chess.WHITE:
 					simulations=10 # set simulations value here
@@ -574,8 +791,9 @@ while rep:
 					move_queue.put(future)
 			if player == "White":
 				if game.turn == chess.BLACK:
+					epsilon = 0.1
 					simulations=10 # set simulations value here
-					future=executor.submit(mcts, game, model, epsilon, simulations=simulations)
+					future=executor.submit(mcts, game, model, epsilon,  simulations=simulations)
 					move_queue.put(future)
 		# Size of each square on your chessboard
 		SQUARE_SIZE = 90  # since each square is 90x90 pixels
